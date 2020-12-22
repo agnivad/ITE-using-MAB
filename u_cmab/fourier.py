@@ -7,6 +7,10 @@ import itertools
 
 
 class Fourier:
+	"""
+	Class within which simulation for epsilon greedy CMAB is defined.
+	Defines the fourier series approximation used in CMAB and store the optimal policy
+	"""
 	def __init__(self, env, order=2, regular=False):
 		self.env = env
 		self.order = order
@@ -21,6 +25,12 @@ class Fourier:
 		self.RP_run_history = pd.DataFrame(columns=columns)
 
 	def get_sim_cause(self, s, tau):
+		"""
+		Check if uplift is above threshold
+		:param np.array s: state
+		:param float tau: threshold
+		:return int: 1 or 0
+		"""
 		uplift = self.env.get_sim_uplift(s)
 		if uplift > tau:
 			return 1
@@ -28,15 +38,34 @@ class Fourier:
 			return 0
 
 	def what_if_cause(self, s, C):
+		"""
+		Create the synthetic data
+
+		:param np.array: s:
+		:param int C: Treatment
+		:return int: 1 or 0
+		"""
 		p = self.env.apply_noise(self.env.get_response_rate(C, s, drift=True))
 
 		return np.random.binomial(1, p)
 
 	def run(self, epsilon=.1, alpha=.005, tau=.2, window=100, lifetime=30000, decay_eps=.999):
-		start_eps = 1.0
+		"""
 
+		:param float epsilon: parameter for epsilon greedy MAB
+		:param float alpha: learning rate
+		:param float tau: threshold
+		:param int window:
+		:param int lifetime: total number of steps of the experiment
+		:param float decay_eps: decay for epsilon with steps
+		:return: incremental_diff_u, drift_moments, incremental_diff_r, total_reward_u, exec_action_u, total_reward_r, exec_action_r
+
+		"""
+		start_eps = 1.0
+		# w_u: weight for fourier approximation U-CMAB
+		# w_r: weight for fourier approximation CMAB
 		w_u, w_r = np.zeros((self.order + 1) ** self.env.dim_count * 2), np.zeros((self.order + 1) ** self.env.dim_count * 2)
-		
+
 		bandit_result_u, bandit_result_r = np.array([]), np.array([])
 		optimal_result = np.array([])
 		difference_u, difference_r = np.array([]), np.array([])
@@ -55,7 +84,6 @@ class Fourier:
 
 		s = self.env.get_new_state()
 		for i in range(lifetime):
-			
 			# choose action (e-greedy)
 			a_u, a_reg = -1, -1
 			if np.random.binomial(1, max(epsilon, start_eps)):
@@ -65,7 +93,9 @@ class Fourier:
 				feedback = np.array([])
 				reward = np.array([])
 				for a in range(2):
+					# compute E[R(Y=1)|a,s]
 					reward = np.append(reward, self.estimate(s, a, w_r))
+					# compute E[R(Y=1)|a,s] - cost of treatment
 					feedback = np.append(feedback, self.estimate(s, a, w_u) - (tau * a))
 				a_reg = np.argmax(reward)
 				a_u = np.argmax(feedback)
@@ -73,8 +103,8 @@ class Fourier:
 			start_eps *= decay_eps
 
 			# apply action on environment
-			n_s, r_r = self.env.choose_cause(a_reg)
-			r_u = self.what_if_cause(s, a_u)
+			n_s, r_r = self.env.choose_cause(a_reg) # return reward after doing a_reg
+			r_u = self.what_if_cause(s, a_u) # return reward after doing a_u
 
 			tot_r_u += r_u
 			total_reward_u = np.append(total_reward_u, tot_r_u)
@@ -88,7 +118,7 @@ class Fourier:
 
 			if self.env.sudden_drift and self.env.current_drift:
 				drift_moments = np.append(drift_moments, self.env.time)
-			
+			# update weight of fourier series using gradient descent
 			w_u = self.update_w(w_u, r_u - self.estimate(s, a_u, w_u), s, a_u, alpha)
 			w_r = self.update_w(w_r, r_r - self.estimate(s, a_reg, w_r), s, a_reg, alpha)
 			
@@ -105,6 +135,7 @@ class Fourier:
 			bandit_result_u = np.append(bandit_result_u, a_u)
 			bandit_result_r = np.append(bandit_result_r, a_reg)
 			optimal_result = np.append(optimal_result, s_cause)
+			# computing regret
 			difference_u = np.append(difference_u, abs(a_u - s_cause))
 			difference_r = np.append(difference_r, abs(a_reg - s_cause))
 			incremental_diff_u = np.append(incremental_diff_u, np.average(difference_u[-window:]))
@@ -117,10 +148,21 @@ class Fourier:
 		return incremental_diff_u, drift_moments, incremental_diff_r, total_reward_u, exec_action_u, total_reward_r, exec_action_r
 			
 	def gather_c(self):
+		"""
+		Helper function
+		:return list:
+		"""
 		cart_prod = list(itertools.product(np.arange(0, self.order+1), repeat=self.env.dim_count))
 		return [list(elem) for elem in cart_prod]
 
 	def basis(self, s, a):
+		"""
+		Compute the base function of fourier series approximation of the expected return
+
+		:param np.array s: state
+		:param a: action
+		:return:
+		"""
 		a_1 = np.zeros((self.order + 1) ** self.env.dim_count)
 		a_0 = np.zeros((self.order + 1) ** self.env.dim_count)
 
@@ -137,9 +179,26 @@ class Fourier:
 		return np.append(a_0, a_1)
 
 	def estimate(self, s, a, w):
-		features = self.basis(s, a) 
+		"""
+		Compute the fourier series
+
+		:param s: state
+		:param a: action
+		:param w: weight
+		:return:
+		"""
+		features = self.basis(s, a)
 		return np.dot(w, features)
 
-	def update_w(self, w, t, s, a, alpha):		
+	def update_w(self, w, t, s, a, alpha):
+		"""
+		Compute gradient descent weight of fourier series
+		:param w: weight
+		:param t: error measure (difference between reward and approximation)
+		:param s: state
+		:param a: action
+		:param alpha: learning rate
+		:return:
+		"""
 		return w + (alpha * t * self.basis(s, a))
 

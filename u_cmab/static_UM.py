@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 
 from pylift import TransformedOutcome
-from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor
 
 
